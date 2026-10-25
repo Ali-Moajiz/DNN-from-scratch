@@ -1,0 +1,48 @@
+# ---------- Compiled output ----------
+# The binary built by `make` (no file extension, so it must be named here).
+# The patterns without a slash match in training/, inference/ and any other folder.
+nn
+nn_*
+*.out
+*.exe
+
+# Object files, libraries, dependency files
+*.o
+*.obj
+*.a
+*.so
+*.dylib
+*.d
+build/
+bin/
+
+# ---------- Debug / sanitizer / profiling ----------
+*.dSYM/
+core
+core.*
+vgcore.*
+*.gcda
+*.gcno
+*.gcov
+callgrind.out.*
+perf.data*
+
+# ---------- Editor and OS ----------
+# Ignore the whole .vscode folder. To share settings instead, delete this line
+# and use these three instead:
+#   .vscode/*
+#   !.vscode/tasks.json
+#   !.vscode/launch.json
+.vscode/
+.idea/
+*.swp
+*~
+.DS_Store
+Thumbs.db
+
+# ---------- Trained models and logs (uncomment what you do NOT want in git) ----------
+# *.weights
+# *.model
+# *.bin
+# *.log
+# *.csv
