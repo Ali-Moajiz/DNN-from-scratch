@@ -82,8 +82,23 @@ void mlp_free(MLP *m)
 
 void mlp_print_params(const MLP *m)
 {
-    for (int i = 0; i < m->n_params; i++)
-        printf("  %-10s = % .4f\n", m->params[i]->label, m->params[i]->data);
+    for (int l = 0; l < m->n_layers; l++)
+    {
+        const Layer *layer = &m->layers[l];
+         printf("Layer %d input (%d x 1), weights (%d x %d):\n",
+             l + 1, layer->nin, layer->nout, layer->nin);
+        for (int j = 0; j < layer->nout; j++)
+        {
+            printf("  [");
+            for (int i = 0; i < layer->nin; i++)
+                printf(" % .6f", layer->neurons[j].w[i]->data);
+            printf(" ]\n");
+        }
+
+        printf("Layer %d biases (%d x 1):\n", l + 1, layer->nout);
+        for (int j = 0; j < layer->nout; j++)
+            printf("  [ % .6f ]\n", layer->neurons[j].b->data);
+    }
 }
 
 /* ---------- forward ---------- */
