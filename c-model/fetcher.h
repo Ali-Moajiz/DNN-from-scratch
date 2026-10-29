@@ -2,8 +2,8 @@
 #define FETCHER_H
 #include "datapath.h"
 typedef struct {
-    Bus load_bus;
-    struct { const Bus *control,*read_response;Bus *load; } ports;
+    Bus load_bus,config_bus;
+    struct { const Bus *control,*read_response;Bus *load,*config_response; } ports;
     uint32_t x_word;
     bool error;
 } Fetcher;

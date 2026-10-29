@@ -71,7 +71,7 @@ static int tb_infer(const int8_t input[ARRAY_SIZE],uint64_t number)
     tb_print_vector(input);putchar('\n');
 
     uint64_t first_cycle=system.network.cycle;
-    if(npu_run(&system,100)!=NPU_RUN_COMPLETE) {
+    if(npu_run(&system,NPU_INFERENCE_CYCLES)!=NPU_RUN_COMPLETE) {
         fprintf(stderr,"[TB] Inference did not complete; no prediction reported.\n");
         return 1;
     }
@@ -92,7 +92,7 @@ static int tb_infer(const int8_t input[ARRAY_SIZE],uint64_t number)
 int tb_run(void)
 {
     puts("Tiny NPU interactive testbench | 4 -> 4 -> 4");
-    puts("Parameters are PLACEHOLDERS; outputs are quantized INT8 values.");
+    puts("Parameters: trained_npu_params.h; outputs are quantized INT8 values.");
     puts("Enter four decimal integers in [-128,127]. Each input runs a fresh inference.");
     puts("No simulated cycles advance while waiting. Enter q or send EOF to quit.\n");
     uint64_t number=1;

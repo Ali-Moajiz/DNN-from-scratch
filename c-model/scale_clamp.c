@@ -1,23 +1,38 @@
 #include "scale_clamp.h"
 #include "logging.h"
-int8_t scale_clamp_value(int32_t value,unsigned shift)
+/* Values are INT32 * positive INT32, so magnitude fits safely in INT64.
+ * Never right-shift a negative signed value or negate INT64_MIN.
+ * Quotient/remainder implement nearest rounding, ties to EVEN, without
+ * risking overflow from adding a rounding bias to the original product. */
+int8_t scale_clamp_value(int32_t value,int32_t multiplier,unsigned shift)
 {
-    /* Portable arithmetic right shift: floor division, including negatives.
-     * int64 intermediate handles INT32_MIN without signed-overflow UB. */
-    int64_t divisor=INT64_C(1)<<shift;
-    int64_t q=value>=0?(int64_t)value/divisor:-((-(int64_t)value+divisor-1)/divisor);
-    return (int8_t)(q>127?127:q< -128?-128:q);
+    int64_t product=(int64_t)value*multiplier;
+    bool negative=product<0;
+    uint64_t magnitude=(uint64_t)(negative?-product:product);
+    uint64_t rounded=magnitude;
+    if(shift) {
+        uint64_t divisor=UINT64_C(1)<<shift;
+        uint64_t quotient=magnitude/divisor,remainder=magnitude%divisor;
+        uint64_t half=divisor/2;
+        if(remainder>half || (remainder==half && (quotient&1))) quotient++;
+        rounded=quotient;
+    }
+    if(negative) return rounded>=128?INT8_MIN:(int8_t)-(int64_t)rounded;
+    return rounded>127?INT8_MAX:(int8_t)rounded;
 }
 void scaleClampBusses(void *context,uint64_t cycle)
 {
     ScaleClamp *s=context;Control c;RowSums sums;
     log_block_begin("Scale / clamp x4");
     if(bus_read(s->ports.control,&c,sizeof c) && c.kind==EDGE_POST) {
-        if(c.shift>31 || !bus_read(s->ports.activated,&sums,sizeof sums)) { s->error=true;return; }
+        if(c.multiplier<=0 || c.shift>62 || !bus_read(s->ports.activated,&sums,sizeof sums)) {
+            s->error=true;log_error(cycle,"Scale","invalid quantization configuration or absent activation");return;
+        }
         Quantized out;
-        for(unsigned r=0;r<4;r++) out.row[r]=scale_clamp_value(sums.row[r],c.shift);
+        for(unsigned r=0;r<4;r++) out.row[r]=scale_clamp_value(sums.row[r],c.multiplier,c.shift);
         bus_write(s->ports.quantized,&out,sizeof out);
-        log_flow(cycle,"Scale","QUANTIZE","shift=%u floor=true q=[%d,%d,%d,%d]",c.shift,out.row[0],out.row[1],out.row[2],out.row[3]);
+        log_flow(cycle,"Scale","QUANTIZE","M=%d S=%u rounding=nearest_ties_even q=[%d,%d,%d,%d]",
+                 c.multiplier,c.shift,out.row[0],out.row[1],out.row[2],out.row[3]);
     }
     log_port("CONTROL",s->ports.control,LOG_INPUT,LOG_BYTES);
     log_port("ACTIVATED",s->ports.activated,LOG_INPUT,LOG_I32X4);

@@ -6,19 +6,19 @@ bool npu_init(Npu *n)
     *n=(Npu){0};bus_network_init(&n->network);bus_network_set_logging(&n->network,true);
     n->network.cycle=1; /* Cycle 1 is S1, after host start/config acceptance. */
     const LayerConfig config[NETWORK_LAYERS]={
-        {SRAM_L1_WEIGHTS,SRAM_L1_BIASES,SRAM_ACTIVATION_A,SRAM_ACTIVATION_B,2,true},
-        {SRAM_L2_WEIGHTS,SRAM_L2_BIASES,SRAM_ACTIVATION_B,SRAM_ACTIVATION_A,2,false}
+        {SRAM_L1_WEIGHTS,SRAM_L1_BIASES,SRAM_ACTIVATION_A,SRAM_ACTIVATION_B,SRAM_L1_CONFIG},
+        {SRAM_L2_WEIGHTS,SRAM_L2_BIASES,SRAM_ACTIVATION_B,SRAM_ACTIVATION_A,SRAM_L2_CONFIG}
     };
     /* Embedded bus addresses are stable before initialization. All constructors
      * finish before the first traversal. Connections are ordinary shared pointers. */
-    if(!controller_init(&n->controller,&n->network,config,&n->fifo.valid_bus) ||
+    if(!controller_init(&n->controller,&n->network,config,&n->fifo.valid_bus,&n->fetcher.config_bus) ||
        !fetcher_init(&n->fetcher,&n->network,&n->controller.control_bus,&n->sram.response_bus) ||
        !sram_init(&n->sram,&n->network,&n->controller.control_bus,&n->fifo.data_bus) ||
        !mac_array_init(&n->array,&n->network,&n->controller.control_bus,&n->fetcher.load_bus) ||
        !activation_init(&n->activation,&n->network,&n->controller.control_bus,&n->array.sums_bus) ||
        !scale_clamp_init(&n->scale,&n->network,&n->controller.control_bus,&n->activation.output_bus) ||
        !fifo_init(&n->fifo,&n->network,&n->controller.control_bus,&n->scale.output_bus)) return false;
-    log_flow(0,"NPU","INITIALIZED","network=4->4->4 array=4x4 parameters=PLACEHOLDERS layers=2");
+    log_flow(0,"NPU","INITIALIZED","network=4->4->4 array=4x4 parameters=trained_npu_params.h config_source=SRAM layers=2");
     return true;
 }
 NpuRunStatus npu_run(Npu *n,uint64_t limit)

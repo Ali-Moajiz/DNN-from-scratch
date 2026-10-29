@@ -8,6 +8,9 @@
 #define SRAM_L2_WEIGHTS 0x104u
 #define SRAM_L1_BIASES 0x200u
 #define SRAM_L2_BIASES 0x204u
+/* Three WORDs per layer: positive INT32 M, unsigned S (0..62), ReLU (0/1). */
+#define SRAM_L1_CONFIG 0x400u
+#define SRAM_L2_CONFIG 0x403u
 typedef struct {
     uint32_t words[SRAM_WORDS];
     Bus response_bus;
