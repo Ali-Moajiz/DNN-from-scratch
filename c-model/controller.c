@@ -1,126 +1,93 @@
 #include "controller.h"
+#include "logging.h"
 #include <stdio.h>
-#include <inttypes.h>
-
-static const char *const state_name[]={"IDLE","ENABLE_MAC","REQUEST_FETCH","WAIT_FIFO","DONE"};
-
-/* Initialize this module's port storage and make its single cycle handler
- * visible to the generic traversal. No controller names live inside bus.c.
- * Keep the Controller at a stable address after initialization (do not copy it).
- */
-bool controller_init(Controller *c, BusNetwork *network, bool logging)
+static const char *edge_name(EdgeKind k)
 {
-    if(!c || !network || network->error ||
-       network->link_count+5>BUS_MAX_LINKS ||
-       network->module_count==BUS_MAX_MODULES) return false;
-    /* Do not reinitialize an already registered module/link. */
-    for(size_t i=0;i<network->module_count;i++)
-        if(network->modules[i].module==c) return false;
-    Bus *owned[]={&c->buses.mem_read,&c->buses.new_data,&c->buses.mem_write,
-                  &c->buses.mac_ctrl,&c->buses.fetch_data};
-    for(size_t i=0;i<network->link_count;i++)
-        for(size_t j=0;j<5;j++) if(network->links[i]==owned[j]) return false;
+    static const char *names[] = {"READ_REQ", "READ_CAP", "COMPUTE", "POST", "STORE"};
+    return names[k];
+}
+/* Decode before the edge; advance only after publishing this edge's controls. */
+static void controllerProcess(Controller *c, Control *out)
+{
+    LayerConfig *cfg = &c->layers[c->layer];
+    *out = (Control){.layer = c->layer, .shift = cfg->shift, .relu = cfg->relu};
 
-    *c=(Controller){0}; c->logging=logging;
-    c->ports=(ControllerPorts){&c->buses.mem_read,&c->buses.new_data,
-        &c->buses.mem_write,&c->buses.mac_ctrl,&c->buses.fetch_data};
-    const size_t sizes[]={sizeof(uint32_t),sizeof(uint8_t),sizeof(uint32_t),
-                          sizeof(uint8_t),sizeof(uint8_t)};
-    size_t old_links=network->link_count, old_modules=network->module_count;
-    for(size_t i=0;i<5;i++) {
-        if(!bus_init(owned[i],sizes[i]) || !bus_register_link(network,owned[i])) {
-            network->link_count=old_links; return false;
-        }
+    if (c->edge < 18)
+    {
+        unsigned read = c->edge / 2;
+        out->kind = (c->edge % 2) ? EDGE_READ_CAP : EDGE_READ_REQ;
+        out->load = read < 4 ? LOAD_WEIGHT : read < 8 ? LOAD_BIAS
+                                                      : LOAD_INPUT;
+        out->index = read < 4 ? read : read < 8 ? read - 4
+                                                : 0;
+        out->address = read < 4 ? cfg->weight_base + read : read < 8 ? cfg->bias_base + read - 4
+                                                                     : cfg->input_base;
     }
-    if(!bus_register_module(network,controllerBusses,c)) {
-        network->link_count=old_links; network->module_count=old_modules;
-        return false;
+
+    else if (c->edge < 25)
+    {
+        out->kind = EDGE_COMPUTE;
+        out->wave = c->edge - 17;
     }
-    return true;
-}
-
-bool controller_start(Controller *c, uint32_t output_count)
-{
-    if(!c || (c->state!=CTRL_IDLE && c->state!=CTRL_DONE) || c->start_pending) return false;
-    c->output_count=output_count; c->completed=0;
-    c->active_mask=c->received_mask=0;
-    c->start_pending=true; c->state=CTRL_IDLE;
-    return true;
-}
-
-bool controller_done(const Controller *c) { return c && c->state==CTRL_DONE; }
-static uint8_t next_mask(const Controller *c)
-{
-    return c->output_count-c->completed>=2 ? 3u : 1u;
-}
-
-/* Phase 1: sample only published/current input events into private fields. */
-static void controllerbusRead(Controller *c)
-{
-    c->in.mem_read_valid=bus_read(c->ports.mem_read,&c->in.mem_read,sizeof(c->in.mem_read));
-    c->in.new_data_valid=bus_read(c->ports.new_data,&c->in.new_data,sizeof(c->in.new_data));
-}
-
-/* Phase 2: controller behavior only; no bus accesses inside this function. */
-static void controllerProcess(Controller *c)
-{
-    c->out=(ControllerOutputs){0};
-    switch(c->state) {
-    case CTRL_IDLE:
-        if(c->start_pending) {
-            c->start_pending=false;
-            c->state=c->output_count ? CTRL_ENABLE_MAC : CTRL_DONE;
-        }
-        break;
-    case CTRL_ENABLE_MAC:
-        c->active_mask=next_mask(c); c->out.mac_ctrl=c->active_mask;
-        c->state=CTRL_FETCH; break;
-    case CTRL_FETCH:
-        c->active_mask=next_mask(c); c->received_mask=0;
-        c->out.mac_ctrl=c->active_mask;
-        c->out.fetch_data=c->active_mask; c->out.fetch_valid=true;
-        c->state=CTRL_WAIT_FIFO; break;
-    case CTRL_WAIT_FIFO:
-        c->out.mac_ctrl=c->active_mask;
-        if(c->in.new_data_valid) {
-            c->received_mask|=c->in.new_data & c->active_mask;
-            if(c->received_mask==c->active_mask) {
-                c->completed+=c->active_mask==3 ? 2u : 1u;
-                if(c->completed==c->output_count) {
-                    c->out.mac_ctrl=0; c->state=CTRL_DONE;
-                } else c->state=CTRL_FETCH;
-            }
-        }
-        break;
-    case CTRL_DONE: break;
+    else if (c->edge == 25)
+        out->kind = EDGE_POST;
+    else
+    {
+        out->kind = EDGE_STORE;
+        out->address = cfg->output_base;
     }
 }
-
-/* Phase 3: stage outputs on shared links; generic traversal publishes them. */
-static void controllerbusWrite(Controller *c)
-{
-    /* Level signal refreshed every cycle. FETCH is a single event per group. */
-    bus_write(c->ports.mac_ctrl,&c->out.mac_ctrl,sizeof(c->out.mac_ctrl));
-    if(c->out.fetch_valid)
-        bus_write(c->ports.fetch_data,&c->out.fetch_data,sizeof(c->out.fetch_data));
-    /* MEM_READ is sampled but unused; MEM_WRITE is never driven yet. */
-}
-
-/* The ONE function registered for this block. Future blocks follow the same
- * read -> process -> write pattern. Main never calls the private phases.
- */
 void controllerBusses(void *context, uint64_t cycle)
 {
-    Controller *c=context; ControllerState old=c->state;
-    controllerbusRead(c);
-    controllerProcess(c);
-    controllerbusWrite(c);
-    if(c->logging) {
-        printf("cycle %2" PRIu64 " CTRL %-13s -> %-13s MAC_CTRL=%u FETCH=",cycle,
-               state_name[old],state_name[c->state],c->out.mac_ctrl);
-        if(c->out.fetch_valid) printf("%u",c->out.fetch_data); else printf("-");
-        printf(" NEW_DATA=");
-        if(c->in.new_data_valid) printf("%u",c->in.new_data); else printf("-");
-        printf(" completed=%" PRIu32 "/%" PRIu32 "\n",c->completed,c->output_count);
+    Controller *c = context;
+    log_block_begin("Controller");
+    if (c->done)
+        return;
+    Control out;
+    controllerProcess(c, &out);
+    uint8_t valid = 0;
+    if (out.kind == EDGE_STORE && (!bus_read(c->ports.fifo_valid, &valid, sizeof valid) || !valid))
+    {
+        c->error = true;
+        log_error(cycle, "Controller", "STORE requires a valid FIFO entry");
+        return;
     }
+
+    bus_write(c->ports.control, &out, sizeof out);
+
+    log_flow(cycle, "Controller", edge_name(out.kind), "layer=%u edge=%u address=0x%03X load=%u index=%u wave=%u relu=%u shift=%u",
+             out.layer + 1, c->edge + 1, out.address, (unsigned)out.load, out.index, out.wave, (unsigned)out.relu, out.shift);
+
+    log_port("CONTROL", c->ports.control, LOG_OUTPUT, LOG_BYTES);
+    
+    log_port("FIFO_VALID", c->ports.fifo_valid, LOG_INPUT, LOG_U8);
+
+    if (logging_ports_enabled())
+        printf("  DECODE state=%s layer=%u edge=%u wave=%u RE=%u WE=%u POST=%u\n",
+               edge_name(out.kind), out.layer + 1, c->edge + 1, out.wave, out.kind == EDGE_READ_REQ, out.kind == EDGE_STORE, out.kind == EDGE_POST);
+    if (++c->edge == 27)
+    {
+        c->edge = 0;
+        if (++c->layer == NETWORK_LAYERS)
+            c->done = true;
+    }
+}
+bool controller_init(Controller *c, BusNetwork *n, const LayerConfig cfg[NETWORK_LAYERS], const Bus *valid)
+{
+    if (!c || !valid)
+        return false;
+
+    *c = (Controller){0};
+
+    c->ports.control = &c->control_bus;
+    c->ports.fifo_valid = valid;
+
+    for (unsigned l = 0; l < NETWORK_LAYERS; l++)
+    {
+        if (cfg[l].shift > 31)
+            return false;
+        c->layers[l] = cfg[l];
+    }
+
+    return bus_init_wire(&c->control_bus, sizeof(Control)) && bus_register_link(n, &c->control_bus) && bus_register_module(n, controllerBusses, c);
 }
