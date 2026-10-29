@@ -3,6 +3,7 @@
 # The patterns without a slash match in training/, inference/ and any other folder.
 nn
 nn_*
+tiny_npu
 *.out
 *.exe
 
@@ -40,9 +41,18 @@ perf.data*
 .DS_Store
 Thumbs.db
 
-# ---------- Trained models and logs (uncomment what you do NOT want in git) ----------
+# ---------- Python / Jupyter ----------
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.ipynb_checkpoints/
+
+# ---------- Logs ----------
+*.log
+
+# ---------- Trained models ----------
 # *.weights
 # *.model
 # *.bin
-# *.log
 # *.csv
