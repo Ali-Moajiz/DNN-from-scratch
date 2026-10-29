@@ -4,15 +4,23 @@
  * Layer 1 deliberately reproduces page 06 of the supplied drawing.
  * Each row is packed LSB first; biases are in product/accumulator units.
  */
+// static const int8_t placeholder_weights[NETWORK_LAYERS][ARRAY_SIZE][ARRAY_SIZE] = {
+//     {{1, 2, 3, 4}, {5, 6, 7, 8}, {-1, -2, -3, -4}, {2, 0, 2, 0}},
+//     {{1, 1, 0, 0}, {0, 1, 1, 0}, {0, 0, 1, 1}, {1, 0, 0, 1}}};
+// static const int32_t placeholder_biases[NETWORK_LAYERS][ARRAY_SIZE] = {
+//     {4, -20, 10, 8}, {0, 4, -4, 8}};
+
 static const int8_t placeholder_weights[NETWORK_LAYERS][ARRAY_SIZE][ARRAY_SIZE] = {
-    {{1, 2, 3, 4}, {5, 6, 7, 8}, {-1, -2, -3, -4}, {2, 0, 2, 0}},
-    {{1, 1, 0, 0}, {0, 1, 1, 0}, {0, 0, 1, 1}, {1, 0, 0, 1}}};
+    {{22, 28, -58, 46}, {-46, -31, -127, -58}, {108, -17, 68, 76}, {80, 24, 80, 31}},
+    {{3, 24, 2, 60}, {-64, 36, 29, 21}, {-64, -117, -99, -127}, {17, -37, -44, 9}}
+};
 
 static const int32_t placeholder_biases[NETWORK_LAYERS][ARRAY_SIZE] = {
-    {4, -20, 10, 8}, {0, 4, -4, 8}};
+    {38, 101, 127, -31},
+    {-16, 127, -69, -81}
+};
 
 static const int8_t placeholder_input[ARRAY_SIZE] = {10, 20, 30, 40};
-
 void sramBusses(void *context, uint64_t cycle)
 {
     Sram *s = context;

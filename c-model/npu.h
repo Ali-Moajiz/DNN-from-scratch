@@ -17,7 +17,6 @@ typedef struct {
     ScaleClamp scale;
     ResultFifo fifo;
 } Npu;
-
 typedef enum { NPU_RUN_ERROR,NPU_RUN_COMPLETE,NPU_RUN_LIMIT } NpuRunStatus;
 bool npu_init(Npu *);
 NpuRunStatus npu_run(Npu *,uint64_t);

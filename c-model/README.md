@@ -1,6 +1,6 @@
 # Tiny NPU: 4 x 4 weight-stationary array
 
-Implements pages **01 and 06** of `Tiny-NPU_drawio_merged.xml`.
+Implements pages **01 and 06** of `Tiny_NPU_Architecture_Model_Updated.drawio.xml`.
 Pages 02–04 describe the older two-lane baseline; they are not the active schedule.
 The network is **4 inputs → 4 hidden neurons → 4 output neurons**: two 4x4
 weight matrices, two length-4 INT32 bias vectors, and one shared 16-MAC array
@@ -21,11 +21,66 @@ No HLS installation is required to build the C simulation. GCC/Clang and make
 are sufficient. The build keeps each logging variant in a separate directory.
 Errors always go to stderr. `make clean` removes build products.
 
+## Interactive testbench (optional)
+
+```sh
+make run TB=1 LOG=flow   # enter a vector, see cycle flow, read result, repeat
+make run TB=1 LOG=ports  # inspect every block's ports each cycle
+make run TB=1 LOG=both
+make run TB=1 LOG=none   # terminal prompts and results only
+make run TB=0 LOG=flow   # original execution; TB=0 is the default
+```
+
+Enter **four decimal signed INT8 values**, separated by spaces, for example
+`10 20 30 40`. Enter `q` (or `Q`) or send EOF to exit. Invalid or out-of-range
+input is rejected without advancing any simulation cycles. Output is a
+four-value quantized INT8 vector; actual trained-model accuracy is pending
+replacement of the placeholder weights/biases and quantization settings.
+
+Each accepted input executes this host-side sequence:
+
+1. Initialize a fresh `Npu` (reset all block/bus state and restore parameters).
+2. Pack the four input bytes and write directly into
+   `system.sram.words[system.controller.layers[0].input_base]` before cycling.
+3. Run the unchanged model through both layers to completion (54 cycles).
+4. Read the packed final word from the last layer's configured output address,
+   print the decoded vector and cycle count, then block for the next input.
+
+The direct input preload represents the **host testbench preparing SRAM**;
+it is not a new hardware port, a bus transaction, or a simulated clock cycle.
+The model then fetches input from SRAM through its existing REQ/CAP flow.
+Cycle numbering restarts at 1 for each inference. No cycles run while waiting
+for terminal input; parameters are reloaded on every fresh inference.
+
+`tb_main.c` is the interactive entry point; `tb.c/.h` contain all terminal I/O,
+validation, SRAM preload, and result reporting. With `TB=0`, the Makefile
+compiles the existing `main.c` and excludes both TB C files from the binary.
+No hardware-block source, bus behavior, or `npu.c` implementation was changed.
+Builds live in `build/tb0/<LOG>` or `build/tb1/<LOG>`, so switching either flag
+does not require cleaning. `LOG=none` suppresses model logs; TB prompts/results
+remain visible. `make log` redirects stdout, including prompts: use `make run`
+for terminal interaction, and reserve `make log` for baseline or piped runs.
+
+Example, with the current placeholders:
+
+```text
+[TB] Enter input [x1 x2 x3 x4], or q to quit: 10 20 30 40
+========== Inference 1 : START ==========
+... model flow through cycles 1–54 ...
+========== Inference 1 : RESULT ==========
+Cycles: 54
+Input:  [10, 20, 30, 40]
+Predicted output (quantized INT8): [50, 32, 4, 26]
+SRAM result: address=0x000 word=0x1A042032
+[TB] Enter input [x1 x2 x3 x4], or q to quit:
+```
+
 ## Files and responsibilities
 
 | File | Responsibility |
 |---|---|
-| `main.c` | Initialize the NPU; run cycles; return completion/error status |
+| `main.c` | Original entry point, used by TB=0 |
+| `tb_main.c`, `tb.c/.h` | Optional interactive host testbench, used by TB=1 |
 | `npu.c` | Assemble shared port connections, choose layer configuration, check faults |
 | `bus.c/.h` | Generic callback traversal and registered/wire transport |
 | `datapath.h` | Typed signal bundles and explicit packed word encoding |

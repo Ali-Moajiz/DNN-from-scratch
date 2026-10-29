@@ -3,7 +3,16 @@ CFLAGS ?= -std=c99 -O0 -g -Wall -Wextra -Werror
 CPPFLAGS ?=
 LDFLAGS ?=
 
-# Independent build directories ensure changing LOG rebuilds the right variant.
+# TB selects the entry point; hardware block sources are identical in both builds.
+TB ?= 0
+ifneq ($(words $(TB)),1)
+$(error TB must contain exactly one value: 0 or 1)
+endif
+ifeq ($(filter $(TB),0 1),)
+$(error Invalid TB=$(TB). Use 0 or 1)
+endif
+
+# Independent directories isolate BOTH testbench and logging variants.
 LOG ?= flow
 ifneq ($(words $(LOG)),1)
 $(error LOG must contain exactly one mode: flow, ports, both or none)
@@ -14,9 +23,15 @@ endif
 FLOW_ENABLED := $(if $(filter flow both,$(LOG)),1,0)
 PORTS_ENABLED := $(if $(filter ports both,$(LOG)),1,0)
 LOG_FLAGS = -DNPU_LOG_FLOW=$(FLOW_ENABLED) -DNPU_LOG_PORTS=$(PORTS_ENABLED)
-BUILD_DIR := build/$(LOG)
+BUILD_DIR := build/tb$(TB)/$(LOG)
 TARGET := $(BUILD_DIR)/tiny_npu
-SOURCES := logging.c bus.c controller.c sram.c fetcher.c mac.c activation.c scale_clamp.c fifo.c npu.c main.c
+CORE_SOURCES := logging.c bus.c controller.c sram.c fetcher.c mac.c activation.c scale_clamp.c fifo.c npu.c
+ifeq ($(TB),1)
+ENTRY_SOURCES := tb_main.c tb.c
+else
+ENTRY_SOURCES := main.c
+endif
+SOURCES := $(CORE_SOURCES) $(ENTRY_SOURCES)
 OBJECTS := $(SOURCES:%.c=$(BUILD_DIR)/%.o)
 LOG_FILE ?= $(LOG).log
 
@@ -35,6 +50,9 @@ log: $(TARGET)
 clean:
 	$(RM) -r build
 help:
+	@echo 'make run TB=0 LOG=flow  # existing single run (default); no TB code linked'
+	@echo 'make run TB=1 LOG=flow  # interactive inputs, cycle flow, result, repeat'
+	@echo 'make run TB=1 LOG=none  # prompts and results only'
 	@echo 'make run LOG=flow   # pipeline events (default)'
 	@echo 'make run LOG=ports  # all block ports every cycle'
 	@echo 'make run LOG=both   # both views'
