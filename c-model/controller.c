@@ -6,6 +6,7 @@ static const char *load_name(LoadKind kind)
     static const char *names[] = {"W", "BIAS", "CFG", "X"};
     return names[kind];
 }
+
 void controllerBusses(void *context, uint64_t cycle)
 {
     Controller *c = context;
@@ -13,6 +14,7 @@ void controllerBusses(void *context, uint64_t cycle)
     log_block_begin("Sequencer / AGU");
     if (c->done)
         return;
+
     if (c->edge == 0)
     {
         c->multiplier = 0;
@@ -20,9 +22,11 @@ void controllerBusses(void *context, uint64_t cycle)
         c->relu = false;
         c->config_loaded = 0;
     }
+
     /* Four reads at E1..E4; destination tag is delayed one clock.
      * Read current Q BEFORE SRAM publishes a new response later this cycle. */
     bool capture = c->edge >= 1 && c->edge <= 4;
+
     if (capture && !bus_read(c->ports.sram_data, &q, sizeof q))
     {
         c->error = true;
@@ -43,10 +47,14 @@ void controllerBusses(void *context, uint64_t cycle)
         c->config_loaded = 1;
         log_flow(cycle, "AGU", "CFG_CAPTURE", "M=%d S=%u relu=%u", c->multiplier, c->shift, c->relu);
     }
+
     LayerConfig *cfg = &c->layers[c->layer];
+
     Control out = {.kind = EDGE_LOAD, .layer = c->layer, .capture = capture, .multiplier = c->multiplier, .shift = c->shift, .relu = c->relu};
+    
     if (capture)
         out.capture_kind = (LoadKind)(c->edge - 1);
+    
     if (c->edge < 4)
     {
         const uint32_t addresses[] = {cfg->weight_base, cfg->bias_base, cfg->config_base, cfg->input_base};
@@ -80,15 +88,19 @@ void controllerBusses(void *context, uint64_t cycle)
         out.address = cfg->output_base;
         out.byte_enable = 0x000f;
     }
+
     bus_write(c->ports.control, &out, sizeof out);
+
     log_flow(cycle, "AGU", "EDGE", "layer=%u edge=%u read=%u capture=%s wave=%u POST=%u STORE=%u",
              c->layer + 1, c->edge + 1, out.read_enable, capture ? load_name(out.capture_kind) : "none", out.wave, out.kind == EDGE_POST, out.kind == EDGE_STORE);
     log_port("CONTROL", c->ports.control, LOG_OUTPUT, LOG_BYTES);
     log_port("SRAM_Q[127:0]", c->ports.sram_data, LOG_INPUT, LOG_U128);
     log_port("FIFO_VALID", c->ports.fifo_valid, LOG_INPUT, LOG_U8);
+
     if (logging_ports_enabled())
         printf("  M=%d S=%u relu=%u RD=%u CAP=%u CAP_KIND=%u BE=0x%04X\n",
                out.multiplier, out.shift, out.relu, out.read_enable, out.capture, (unsigned)out.capture_kind, out.byte_enable);
+
     if (++c->edge == LAYER_TOTAL_EDGES)
     {
         c->edge = 0;
@@ -96,6 +108,7 @@ void controllerBusses(void *context, uint64_t cycle)
             c->done = true;
     }
 }
+
 bool controller_init(Controller *c, BusNetwork *n, const LayerConfig cfg[NETWORK_LAYERS], const Bus *valid, const Bus *q)
 {
     if (!c || !valid || !q)
