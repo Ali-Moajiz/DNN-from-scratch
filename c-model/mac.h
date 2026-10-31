@@ -10,7 +10,7 @@ typedef struct {
     uint32_t input_word;
     RowSums sums;
     Bus sums_bus;
-    struct { const Bus *control,*load;Bus *row_sums; } ports;
+    struct { const Bus *control,*sram_data;Bus *row_sums; } ports;
     uint8_t weights_loaded,biases_loaded;
     bool input_loaded,error;
     unsigned updates;

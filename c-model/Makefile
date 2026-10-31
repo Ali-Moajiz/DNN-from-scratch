@@ -25,7 +25,7 @@ PORTS_ENABLED := $(if $(filter ports both,$(LOG)),1,0)
 LOG_FLAGS = -DNPU_LOG_FLOW=$(FLOW_ENABLED) -DNPU_LOG_PORTS=$(PORTS_ENABLED)
 BUILD_DIR := build/tb$(TB)/$(LOG)
 TARGET := $(BUILD_DIR)/tiny_npu
-CORE_SOURCES := logging.c bus.c controller.c sram.c fetcher.c mac.c activation.c scale_clamp.c fifo.c npu.c
+CORE_SOURCES := logging.c bus.c controller.c sram.c mac.c activation.c scale_clamp.c fifo.c npu.c
 ifeq ($(TB),1)
 ENTRY_SOURCES := tb_main.c tb.c
 else

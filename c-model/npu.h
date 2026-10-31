@@ -1,7 +1,6 @@
 #ifndef NPU_H
 #define NPU_H
 #include "controller.h"
-#include "fetcher.h"
 #include "sram.h"
 #include "mac.h"
 #include "activation.h"
@@ -10,7 +9,6 @@
 typedef struct {
     BusNetwork network;
     Controller controller;
-    Fetcher fetcher;
     Sram sram;
     MacArray array;
     Activation activation;

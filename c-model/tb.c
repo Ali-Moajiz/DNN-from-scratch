@@ -60,14 +60,14 @@ static int tb_infer(const int8_t input[ARRAY_SIZE],uint64_t number)
     }
     uint32_t input_address=system.controller.layers[0].input_base;
     uint32_t output_address=system.controller.layers[NETWORK_LAYERS-1].output_base;
-    if(input_address>=SRAM_WORDS || output_address>=SRAM_WORDS) {
+    if(!sram_address_valid(input_address) || !sram_address_valid(output_address)) {
         fprintf(stderr,"[TB] Invalid configured SRAM address.\n");return 1;
     }
 
     /* Direct host preload, not a modeled SRAM transaction or an extra port. */
-    system.sram.words[input_address]=pack_i8(input);
-    printf("[TB] SRAM preload: address=0x%03" PRIX32 " word=0x%08" PRIX32 " input=",
-           input_address,system.sram.words[input_address]);
+    system.sram.lines[input_address/16].lane[0]=pack_i8(input);
+    printf("[TB] SRAM preload: byte_address=0x%04" PRIX32 " word=0x%08" PRIX32 " input=",
+           input_address,system.sram.lines[input_address/16].lane[0]);
     tb_print_vector(input);putchar('\n');
 
     uint64_t first_cycle=system.network.cycle;
@@ -75,7 +75,7 @@ static int tb_infer(const int8_t input[ARRAY_SIZE],uint64_t number)
         fprintf(stderr,"[TB] Inference did not complete; no prediction reported.\n");
         return 1;
     }
-    uint32_t packed=system.sram.words[output_address];
+    uint32_t packed=system.sram.lines[output_address/16].lane[0];
     int8_t output[ARRAY_SIZE];
     for(unsigned i=0;i<ARRAY_SIZE;i++) output[i]=unpack_i8(packed,i);
 
@@ -83,7 +83,7 @@ static int tb_infer(const int8_t input[ARRAY_SIZE],uint64_t number)
     printf("Cycles: %" PRIu64 "\n",system.network.cycle-first_cycle);
     printf("Input:  ");tb_print_vector(input);putchar('\n');
     printf("Predicted output (quantized INT8): ");tb_print_vector(output);putchar('\n');
-    printf("SRAM result: address=0x%03" PRIX32 " word=0x%08" PRIX32 "\n",
+    printf("SRAM result: byte_address=0x%04" PRIX32 " word=0x%08" PRIX32 "\n",
            output_address,packed);
     puts("================================================\n");
     return 0;

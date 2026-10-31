@@ -1,165 +1,172 @@
-# Tiny NPU: 4x4 array with model-specific integer requantization
+# Tiny NPU — 128-bit SRAM and direct operand capture
 
-Two-layer **4 → 4 → 4** network, one 16-cell weight-stationary array, single-port
-SRAM, ReLU/bypass, M/S scale/clamp, and depth-one packed result FIFO.
-The MAC array, activation arithmetic, FIFO and generic bus framework are
-unchanged from the previous model. Configuration loading and output scaling
-are updated to match the revised Python notebook.
+Implements the wide-local-SRAM architecture in the supplied draw.io drawing.
+The 4→4→4 neural network and quantization arithmetic are retained. The array
+still has 16 weight-stationary MAC cells with registered x/partial-sum links.
 
-## Build / terminal testbench
+**Changes from the previous model:**
+
+- SRAM is 1024 lines × 128 bits (16 KiB), with 16 byte-write enables.
+- Addresses are now **BYTE addresses**, aligned to 16 bytes.
+- `fetcher.c/.h` are removed; there is no FetchLoad bus or fetcher callback.
+- Controller acts as a tile sequencer/AGU, issuing four consecutive reads.
+- The SRAM response bus connects directly to both sequencer and MAC array.
+- All 16 weights capture on one edge; all four biases capture on another.
+- Input/bias capture is inside mac.c; configuration capture is in controller.c.
+  These represent distributed destination registers, not additional pipeline stages.
+- Inference takes **28 simulated cycles**, down from 66, with 8 wide reads,
+  2 masked writes, and 32 useful MAC updates.
+
+No new C/header block files were added. Existing block separation is retained;
+only the now-unnecessary fetcher files were removed.
+
+## Build and terminal TB
 
 ```sh
-make run TB=1 LOG=flow   # enter 4 raw INT8 values; see cycles, result, then wait
-make run TB=1 LOG=ports  # every block port / all cell registers each cycle
+make run TB=1 LOG=flow   # cycle/transfer/arithmetic flow, then result and wait
+make run TB=1 LOG=ports  # every block port and all cell registers each cycle
 make run TB=1 LOG=both
-make run TB=1 LOG=none   # terminal prompts/results only
-make run TB=0 LOG=flow   # one default inference; default build is TB=0
-make log TB=0 LOG=flow  # save flow.log
+make run TB=1 LOG=none   # terminal prompts and results only
+make run TB=0 LOG=flow   # default: one inference without interactive TB
+make log TB=0 LOG=flow   # save flow.log
 ```
 
-Enter, for example, `1 2 3 4`; `q` or EOF exits. Each accepted vector starts a
-fresh model, preloads only its input word, and runs **66 cycles**. No clock
-cycles advance while waiting for input. Invalid input is rejected before any
-inference. TB=0 excludes `tb.c` and `tb_main.c`; the original `main.c` remains
-the baseline entry point. Separate build/tb0 and build/tb1 directories also
-separate logging modes, so switching flags needs no clean.
+Enter four raw signed INT8 values, e.g. `1 2 3 4`. Enter `q` or EOF to exit.
+Each vector resets the model, restores its parameters, preloads the input,
+runs inference, displays the result, then waits without advancing cycles.
+Invalid input is rejected before execution. TB=0 does not compile/link tb.c
+or tb_main.c. Builds are isolated under build/tb0 and build/tb1 by log mode.
+No HLS tools are needed to compile this C99 simulation.
 
-Input values are **already quantized INT8**, not original feature measurements
-or preprocessed floats. Compare with Python:
+With the bundled header, `[1,2,3,4]` gives `[0,1,-4,-1]`, packed `0xFFFC0100`.
+Compare to Python `inference_raw_int8([1,2,3,4], params)`. Real float features
+need host preprocessing/quantization first, as in the updated notebook.
 
-```python
-inference_raw_int8([1, 2, 3, 4], params)
-```
+## Files / reading order
 
-For model-input floats, Python must first apply its fixed input scale. For
-original dataset measurements, it must also apply the notebook's fitted
-StandardScaler and feature gain. The C TB does neither of these host-side
-float operations. It prints the final raw INT8 vector; multiply by the
-exported output scale on the host to interpret approximate real logits.
-
-## Replace trained parameters
-
-`trained_npu_params.h` is included directly by **sram.c**. It contains:
-
-- `trained_weights[2][4][4]`: signed INT8, W[output][input].
-- `trained_biases[2][4]`: signed INT32, already in accumulator units.
-- `requant_multiplier[2]`: positive signed INT32 M.
-- `requant_shift[2]`: unsigned S, range 0..62.
-- `relu_enable[2]`: 0=bypass, 1=ReLU.
-
-Replace this whole header with the file exported by your updated notebook,
-then run make. Dependency tracking recompiles sram.c when the header changes.
-Do not mix weights, biases or M/S from different training/export runs.
-
-The bundled header comes from the validated notebook run: training-only
-preprocessing, seed 42, 300 epochs, same four-feature dataset. It may differ
-from your local training run; use YOUR complete exported header to match YOUR
-Python predictions. `npu_preprocessing.json` and `npu_reference_vectors.json`
-in this project correspond to the bundled header only. Float scale metadata
-is for host interpretation; the NPU datapath does not use floating point.
-
-With the bundled header, raw `[1,2,3,4]` produces `[0,1,-4,-1]` at SRAM A,
-packed word `0xFFFC0100`. The earlier `[19,34,-127,-35]` used dynamic output
-normalization and a different export; it is not the reference for this model.
-
-## Runtime SRAM map (WORD addresses)
-
-| Region | Word addresses | Stored values |
-|---|---|---|
-| Activation A | 0x000 | Initial packed input; overwritten by final output |
-| Layer 1 weights | 0x100..0x103 | Four packed INT8 rows |
-| Layer 2 weights | 0x104..0x107 | Four packed INT8 rows |
-| Layer 1 biases | 0x200..0x203 | Four full INT32 values |
-| Layer 2 biases | 0x204..0x207 | Four full INT32 values |
-| Activation B | 0x300 | Packed hidden vector |
-| Layer 1 configuration | 0x400, 0x401, 0x402 | M, S, ReLU |
-| Layer 2 configuration | 0x403, 0x404, 0x405 | M, S, ReLU |
-
-Each INT8 row/vector packs four bytes LSB first: element 0 in bits 7:0.
-Biases use two's complement. SRAM has 4096 words and one access per edge.
-Initialization only preloads SRAM; runtime parameters are not loaded directly
-into controller or MAC registers by npu_init.
-
-## What changed and where
-
-| File | Change |
+| File | Responsibility |
 |---|---|
-| datapath.h | Config base address, LOAD_CONFIG, M in Control, schedule constants |
-| sram.c/.h | Exported header preload; six configuration words |
-| fetcher.c/.h | Separate registered CONFIG_RESPONSE bus to controller |
-| controller.c/.h | Read M/S/ReLU, validate/capture config, drive active settings |
-| scale_clamp.c/.h | INT64 multiply, nearest/ties-even shift, signed INT8 clamp |
-| npu.c | Wire config feedback; configure layer memory bases |
-| main.c / tb.c | Use inference cycle constant; updated parameter reporting |
+| main.c | Initialize and run model; no block-specific traversal |
+| npu.c/.h | Own instances, wire shared ports, register blocks, check completion/errors |
+| bus.c/.h | Generic registered/wire links and cycle traversal (unchanged) |
+| datapath.h | Typed signals, Line128 and packing helpers |
+| controller.c/.h | Pipeline SRAM requests/capture tags, capture config, enable compute/POST/STORE |
+| sram.c/.h | 128-bit native memory behavior, byte masks and parameter preload |
+| mac.c/.h | Direct capture into PE weights/local bias/x; unchanged wavefront arithmetic |
+| activation.c/.h | Four ReLU/bypass lanes (unchanged) |
+| scale_clamp.c/.h | Integer M/S requantization (unchanged) |
+| fifo.c/.h | One 32-bit vector held for a masked 128-bit SRAM write |
+| logging.c/.h | Flow/port formatting, including 128-bit Q/WDATA |
+| tb.c/.h, tb_main.c | Optional host terminal interaction and SRAM input preload |
+| trained_npu_params.h | Exported weights, accumulator-unit biases, M/S and ReLU |
 
-There are no TB-specific branches in hardware blocks.
+The CPU box in the architecture is optional. This model implements the tile
+FSM/AGU, **not** a CPU, instruction decoder or real vector/matrix ISA. Default
+layer base-address commands are configured by npu_init. A future CPU can submit
+those commands to the same local sequencer.
 
-## Configuration path and cycle timing
+## 128-bit layout / BYTE address map
 
-Traversal is unchanged:
-**Controller → Fetcher → SRAM → MacArray → Activation → ScaleClamp → FIFO**.
-All blocks share Bus pointers, and each registers one callback.
+`Line128.lane[0]` is bits31:0; lane[3] is bits127:96. It is an explicit logical
+value built from four uint32_t lanes, not a compiler-specific 128-bit integer.
+Within a lane, INT8 values pack LSB first. Packing is independent of host endian.
 
-Control, FetchLoad to the array, activation and quantized outputs are
-combinational wires: later callbacks can read same-cycle writes. SRAM read
-data, array row sums, FIFO data/valid, and the NEW config-response bus are
-registered: writes become visible after traversal, for the following cycle.
+| Byte base | Line contents |
+|---|---|
+| 0x0000 | Activation A: initial x in lane0; final q overwrites lane0 |
+| 0x0100 | Layer 1 W: four packed weight rows, one row per lane |
+| 0x0110 | Layer 2 W: four packed weight rows |
+| 0x0200 | Layer 1 biases: four INT32 lanes |
+| 0x0210 | Layer 2 biases: four INT32 lanes |
+| 0x0300 | Hidden vector B in lane0 |
+| 0x0400 | Layer 1 CFG: lane0=M, lane1=S, lane2=ReLU, lane3=reserved zero |
+| 0x0410 | Layer 2 CFG: same format |
 
-The controller executes before Fetcher, so configuration feedback is registered:
+Memory line index is `byte_address / 16`. Misalignment and out-of-range
+accesses are errors. These addresses/formats intentionally differ from the old
+32-bit word-addressed model; do not reuse its numeric indices into the array.
 
-1. Cycle 1: Controller requests M; SRAM stages response.
-2. Cycle 2: Fetcher captures it and stages CONFIG_RESPONSE.
-3. Cycle 3: Controller captures M while requesting S.
-4. Cycle 4: Fetcher captures S.
-5. Cycle 5: Controller captures S while requesting ReLU.
-6. Cycle 6: Fetcher captures ReLU.
-7. Cycle 7: Controller captures ReLU while requesting weight row 0.
+M must be 1..INT32_MAX; S must be 0..62; ReLU must be 0 or 1; reserved=0.
+All four configuration fields are validated before computation.
 
-Thus capturing config overlaps the next request and adds exactly six cycles
-per layer. All configuration is validated before computation: M=1..INT32_MAX,
-S=0..62, ReLU=0/1. Invalid/missing configuration stops the model with an error.
+Replace the entire `trained_npu_params.h` with your notebook export, then run
+make. sram.c packs it into the wide format automatically. Do not separately
+edit numerical constants inside controller/mac/scale. The bundled header and
+JSON metadata/reference vectors come from the validated notebook run and must
+be kept together; your local training run may export slightly different values.
 
-| Operation | Layer 1 cycles | Layer 2 cycles |
+## Direct routing: no fetch/copy stage
+
+`npu.c` passes **the same &sram.response_bus** to the sequencer and MAC array.
+Both read current SRAM Q. The sequencer sends only control signals, not a copy
+of the operand payload. Captures are:
+
+```
+CAP_W:   cell[r][c].weight = unpack_byte(Q.lane[r], c)  // all 16 on one edge
+CAP_B:   bias[r] = signed_INT32(Q.lane[r])             // all 4 on one edge
+CAP_CFG: controller captures M, S and ReLU from Q
+CAP_X:   input_word = Q.lane[0]
+```
+
+The generic Bus is simulation transport; it is not AXI or a shared arbitrated
+interconnect. Destination registers are ordinary persistent C fields. Copies
+from the shared Q payload into these fields represent register captures; they
+do not add another simulated clock or an intermediate fetcher pipeline.
+
+## Exact cycle schedule
+
+| Operation | Layer 1 | Layer 2 |
 |---|---|---|
-| M/S/ReLU: 3 REQ/CAP pairs | 1..6 | 34..39 |
-| Four weight row REQ/CAP pairs | 7..14 | 40..47 |
-| Four bias REQ/CAP pairs | 15..22 | 48..55 |
-| Packed input REQ/CAP | 23..24 | 56..57 |
-| Array C1..C7 | 25..31 | 58..64 |
-| POST: activation, scaling, FIFO capture | 32 | 65 |
-| STORE: packed SRAM write, FIFO pop | 33 | 66 |
+| Issue W read | 1 | 15 |
+| Capture all W; issue B read | 2 | 16 |
+| Capture all biases; issue CFG read | 3 | 17 |
+| Capture M/S/ReLU; issue X read | 4 | 18 |
+| Capture x | 5 | 19 |
+| C1..C7 wavefront | 6..12 | 20..26 |
+| POST: activation, scaling, FIFO capture | 13 | 27 |
+| STORE: masked SRAM write, FIFO pop | 14 | 28 |
 
-Total: 33 edges per layer, **66 cycles per inference**, 24 SRAM reads,
-2 writes, 32 useful MAC updates. Cycle 1 is the first setup edge after the
-host configuration/start boundary; no separate start/IDLE edge is counted.
+One callback traversal equals one simulated clock update:
+**Controller → SRAM → MAC array → Activation → ScaleClamp → FIFO**.
+SRAM writes its NEXT Q during a read; consumers still see CURRENT Q from the
+previous cycle, even when SRAM's callback runs before the MAC callback. Thus
+capturing W while issuing B cannot accidentally capture the new bias data.
 
-## Exact numerical contract
+Control is a same-cycle wire. SRAM Q, array row sums and FIFO data/valid are
+registered links. Activation and quantized outputs are same-cycle wires at
+POST, feeding the FIFO capture. Generic bus timing/framework is unchanged.
+Destination tags are one-cycle delayed by the sequencer's edge decoder; the
+fixed-latency memory accepts one request each clock without stalls.
 
-Zero points are zero. For each output row:
+All cells use a snapshot of OLD neighbour registers. Cell(r,c), one-based,
+updates at C(r+c-1). Active cell counts remain 1,2,3,4,3,2,1. Final row sums
+are registered before POST. Layer 2 reads hidden B only after STORE1.
 
-```
-acc = bias_int32 + sum(weight_int8 * input_int8)
-activated = relu_enable ? max(acc, 0) : acc
-product_int64 = activated * M
-rounded = round_nearest_ties_even(product_int64 / 2^S)
-q = clamp(rounded, -128, 127)
-```
+STORE supplies 128-bit WDATA, with q in lane0, and byte_enable=0x000F. Only the
+low four bytes change; upper96 of the destination line are preserved. Native
+per-byte writes are assumed; no read-modify-write cycles are hidden.
+Eight 16-byte reads fetch 128 bytes including padding/reserved lanes. The
+improvement is fewer/wider access cycles, not less total transferred data.
 
-Bias export is `round(float_bias / (input_scale * weight_scale))`.
-M/2^S approximates `input_scale * weight_scale / output_scale`.
-Python and C use the same integer M/S and the same signed rounding rule.
-Examples: +2.5→2, +3.5→4, -2.5→-2, -3.5→-4.
-There is no MAC saturation: partial sums must fit INT32 or the simulator errors.
-INT32×positive-INT32 products safely fit INT64. Scale/clamp avoids shifting
-negative signed integers and avoids overflow from adding a rounding bias.
+## Numerical contract / limits
 
-The array still snapshots all old cells before wavefront updates. Cell (r,c),
-using one-based indices, fires at C(r+c-1); x moves down and partial sums right.
-Activation and scaling remain combinational at POST. The wider scaling path
-may need pipelining or a longer clock period in actual HLS/RTL, changing the
-schedule. **66 cycles is this architectural C schedule, not synthesized timing.**
+INT8 x INT8 -> INT16 product; signed INT32 partial sums and biases. No MAC
+saturation; overflow is an error. ReLU/bypass precedes requantization:
 
-No DMA, stalls, AXI, instruction fetch, variable shapes, automatic tiling,
-streaming overlapping vectors, or repeated-vector shortcut is implemented.
-The function-pointer scheduler/logging are software simulation scaffolding,
-not a synthesizable HLS top.
+`q = clamp_int8(round_nearest_ties_even((int64_t)activated * M / 2^S))`.
+
+All arithmetic/rounding matches the updated Python integer reference. The
+input/output scales in the header/JSON are host metadata; datapath uses no
+floating-point calculations.
+
+This is a cycle-defined architectural C simulation, **not synthesized RTL**.
+28 cycles assumes a one-cycle SRAM response, one request/clock, no stalls,
+and a one-stage POST path. A physical memory macro or the INT64 requantizer
+may require more pipeline stages or a different clock period. There is no
+claim of measured FPGA speedup. No CPU ISA, AXI, DMA, variable dimensions,
+automatic tiling, persistent two-layer parameter cache, overlapping vectors,
+or hidden-vector bypass is implemented. The optional CPU remains future work.
+
+The separately supplied wide-SRAM draw.io architecture remains the hardware
+reference. This C release now implements its 28-cycle baseline; RTL timing
+still requires synthesis and validation.

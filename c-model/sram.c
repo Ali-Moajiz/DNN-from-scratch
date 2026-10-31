@@ -1,65 +1,48 @@
 #include "sram.h"
 #include "logging.h"
 #include "trained_npu_params.h"
-/* Exported parameters preload SRAM only. Runtime blocks read via REQ/CAP. */
-static const int8_t initial_input[ARRAY_SIZE] = {1, 2, 3, 4};
-void sramBusses(void *context, uint64_t cycle)
+void sramBusses(void *context,uint64_t cycle)
 {
-    Sram *s = context;
-    Control c;
-    log_block_begin("SRAM");
-    if (bus_read(s->ports.control, &c, sizeof c) && (c.kind == EDGE_READ_REQ || c.kind == EDGE_STORE))
-    {
-        if (c.address >= SRAM_WORDS)
-        {
-            s->error = true;
-            log_error(cycle, "SRAM", "address out of range: %u", c.address);
-            return;
+    Sram *s=context;Control c;
+    log_block_begin("SRAM 128-bit");
+    if(bus_read(s->ports.control,&c,sizeof c) && (c.read_enable || c.kind==EDGE_STORE)) {
+        if(!sram_address_valid(c.address) || (c.read_enable && c.kind==EDGE_STORE)) {
+            s->error=true;log_error(cycle,"SRAM","unaligned/out-of-range address or simultaneous read/write");return;
         }
-        if (c.kind == EDGE_READ_REQ)
-        {
-            uint32_t value = s->words[c.address];
-            bus_write(s->ports.read_response, &value, sizeof value);
-            s->reads++;
-            log_flow(cycle, "SRAM", "READ", "addr=0x%03X data=0x%08X capture_edge=%llu", c.address, value, (unsigned long long)(cycle + 1));
-        }
-        else
-        {
-            uint32_t value;
-            if (!bus_read(s->ports.write_data, &value, sizeof value))
-            {
-                s->error = true;
-                log_error(cycle, "SRAM", "write without FIFO data");
-                return;
+        Line128 *line=&s->lines[c.address/16];
+        if(c.read_enable) {
+            bus_write(s->ports.read_response,line,sizeof *line);s->reads++;
+            log_flow(cycle,"SRAM","READ_128","byte_addr=0x%04X kind=%u Q=%08X_%08X_%08X_%08X capture_cycle=%llu",
+                c.address,(unsigned)c.read_kind,line->lane[3],line->lane[2],line->lane[1],line->lane[0],(unsigned long long)(cycle+1));
+        } else {
+            Line128 data;
+            if(!bus_read(s->ports.write_data,&data,sizeof data)) {
+                s->error=true;log_error(cycle,"SRAM","write without FIFO payload");return;
             }
-            s->words[c.address] = value;
+            for(unsigned byte=0;byte<16;byte++) if(c.byte_enable&(1u<<byte)) {
+                unsigned word=byte/4,shift=8*(byte%4);uint32_t mask=UINT32_C(255)<<shift;
+                line->lane[word]=(line->lane[word]&~mask)|(data.lane[word]&mask);
+            }
             s->writes++;
-            log_flow(cycle, "SRAM", "WRITE", "addr=0x%03X data=0x%08X layer=%u", c.address, value, c.layer + 1);
+            log_flow(cycle,"SRAM","WRITE_128","byte_addr=0x%04X BE=0x%04X low32=0x%08X",c.address,c.byte_enable,line->lane[0]);
         }
     }
-    log_port("CONTROL", s->ports.control, LOG_INPUT, LOG_BYTES);
-    log_port("FIFO_WRITE_DATA", s->ports.write_data, LOG_INPUT, LOG_U32);
-    log_port("READ_RESPONSE", s->ports.read_response, LOG_OUTPUT, LOG_U32);
+    log_port("CONTROL",s->ports.control,LOG_INPUT,LOG_BYTES);
+    log_port("WDATA[127:0]",s->ports.write_data,LOG_INPUT,LOG_U128);
+    log_port("Q[127:0]",s->ports.read_response,LOG_OUTPUT,LOG_U128);
 }
-bool sram_init(Sram *s, BusNetwork *n, const Bus *ctrl, const Bus *data)
+bool sram_init(Sram *s,BusNetwork *n,const Bus *ctrl,const Bus *data)
 {
-    *s = (Sram){0};
-    s->ports.control = ctrl;
-    s->ports.write_data = data;
-    s->ports.read_response = &s->response_bus;
-    for (unsigned l = 0; l < NETWORK_LAYERS; l++)
-        for (unsigned r = 0; r < ARRAY_SIZE; r++)
-        {
-            s->words[SRAM_L1_WEIGHTS + 4 * l + r] = pack_i8(trained_weights[l][r]);
-            s->words[SRAM_L1_BIASES + 4 * l + r] = (uint32_t)trained_biases[l][r];
+    *s=(Sram){0};s->ports.control=ctrl;s->ports.write_data=data;s->ports.read_response=&s->response_bus;
+    for(unsigned l=0;l<NETWORK_LAYERS;l++) {
+        Line128 *w=&s->lines[(SRAM_L1_WEIGHTS+16*l)/16];
+        Line128 *b=&s->lines[(SRAM_L1_BIASES+16*l)/16];
+        for(unsigned r=0;r<4;r++) {
+            w->lane[r]=pack_i8(trained_weights[l][r]);b->lane[r]=(uint32_t)trained_biases[l][r];
         }
-    for (unsigned l = 0; l < NETWORK_LAYERS; l++)
-    {
-        uint32_t base = SRAM_L1_CONFIG + LAYER_CONFIG_WORDS * l;
-        s->words[base] = (uint32_t)requant_multiplier[l];
-        s->words[base + 1] = requant_shift[l];
-        s->words[base + 2] = relu_enable[l];
+        s->lines[(SRAM_L1_CONFIG+16*l)/16]=(Line128){{(uint32_t)requant_multiplier[l],requant_shift[l],relu_enable[l],0}};
     }
-    s->words[SRAM_ACTIVATION_A] = pack_i8(initial_input);
-    return bus_init(&s->response_bus, sizeof(uint32_t)) && bus_register_link(n, &s->response_bus) && bus_register_module(n, sramBusses, s);
+    const int8_t initial[4]={1,2,3,4};
+    s->lines[SRAM_ACTIVATION_A/16].lane[0]=pack_i8(initial);
+    return bus_init(&s->response_bus,sizeof(Line128)) && bus_register_link(n,&s->response_bus) && bus_register_module(n,sramBusses,s);
 }

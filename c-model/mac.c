@@ -3,16 +3,21 @@
 #include <stdio.h>
 #include <string.h>
 #include <inttypes.h>
-static void macArrayLoad(MacArray *a,const FetchLoad *load)
+/* Direct SRAM Q -> destination registers. No intermediate fetch/copy module.
+ * All sixteen weights capture on ONE edge; lane r holds row r's four bytes. */
+static void macArrayCapture(MacArray *a,LoadKind kind,const Line128 *q,uint64_t cycle)
 {
-    if(load->index>=4) { a->error=true;return; }
-    unsigned r=load->index;
-    if(load->kind==LOAD_WEIGHT) {
-        for(unsigned c=0;c<4;c++) a->cell[r][c].weight=unpack_i8(load->word,c);
-        a->weights_loaded|=(uint8_t)(1u<<r);
-    } else if(load->kind==LOAD_BIAS) {
-        a->bias[r]=unpack_i32(load->word);a->biases_loaded|=(uint8_t)(1u<<r);
-    } else { a->input_word=load->word;a->input_loaded=true; }
+    if(kind==LOAD_WEIGHT) {
+        for(unsigned r=0;r<4;r++) for(unsigned c=0;c<4;c++) a->cell[r][c].weight=unpack_i8(q->lane[r],c);
+        a->weights_loaded=15;log_flow(cycle,"MAC_array","W_CAPTURE_128","16 weights loaded simultaneously");
+    } else if(kind==LOAD_BIAS) {
+        for(unsigned r=0;r<4;r++) a->bias[r]=unpack_i32(q->lane[r]);
+        a->biases_loaded=15;log_flow(cycle,"MAC_array","BIAS_CAPTURE_128","4 INT32 biases loaded simultaneously");
+    } else if(kind==LOAD_INPUT) {
+        a->input_word=q->lane[0];a->input_loaded=true;
+        for(unsigned r=0;r<4;r++) for(unsigned c=0;c<4;c++) a->cell[r][c].valid=false;
+        log_flow(cycle,"MAC_array","X_CAPTURE","low32=0x%08X",a->input_word);
+    }
 }
 static void macArrayProcess(MacArray *a,const Control *ctrl,uint64_t cycle)
 {
@@ -41,19 +46,20 @@ static void macArrayProcess(MacArray *a,const Control *ctrl,uint64_t cycle)
 }
 void macArrayBusses(void *context,uint64_t cycle)
 {
-    MacArray *a=context;FetchLoad load;Control c;
+    MacArray *a=context;Line128 q;Control c;
     log_block_begin("MAC array (16 cells)");
-    if(bus_read(a->ports.load,&load,sizeof load)) {
-        macArrayLoad(a,&load);
-        log_flow(cycle,"MAC_array",load.kind==LOAD_WEIGHT?"W_LOAD":load.kind==LOAD_BIAS?"BIAS_LOAD":"X_CAPTURE",
-                 "index=%u word=0x%08X",load.index,load.word);
-        if(load.kind==LOAD_INPUT) {
-            for(unsigned r=0;r<4;r++) for(unsigned col=0;col<4;col++) a->cell[r][col].valid=false;
+    if(bus_read(a->ports.control,&c,sizeof c)) {
+        if(c.read_enable && c.read_kind==LOAD_WEIGHT) {
+            a->weights_loaded=0;a->biases_loaded=0;a->input_loaded=false;
         }
+        if(c.capture) {
+            if(!bus_read(a->ports.sram_data,&q,sizeof q)) { a->error=true;return; }
+            macArrayCapture(a,c.capture_kind,&q,cycle);
+        }
+        if(c.kind==EDGE_COMPUTE) macArrayProcess(a,&c,cycle);
     }
-    if(bus_read(a->ports.control,&c,sizeof c) && c.kind==EDGE_COMPUTE) macArrayProcess(a,&c,cycle);
     log_port("CONTROL",a->ports.control,LOG_INPUT,LOG_BYTES);
-    log_port("ARRAY_LOAD",a->ports.load,LOG_INPUT,LOG_BYTES);
+    log_port("SRAM_Q[127:0]",a->ports.sram_data,LOG_INPUT,LOG_U128);
     log_port("ROW_SUMS",a->ports.row_sums,LOG_OUTPUT,LOG_I32X4);
     if(logging_ports_enabled()) for(unsigned r=0;r<4;r++) {
         printf("  ROW%u bias=%" PRId32,r+1,a->bias[r]);
@@ -61,8 +67,8 @@ void macArrayBusses(void *context,uint64_t cycle)
         putchar('\n');
     }
 }
-bool mac_array_init(MacArray *a,BusNetwork *n,const Bus *ctrl,const Bus *load)
+bool mac_array_init(MacArray *a,BusNetwork *n,const Bus *ctrl,const Bus *q)
 {
-    *a=(MacArray){0};a->ports.control=ctrl;a->ports.load=load;a->ports.row_sums=&a->sums_bus;
+    *a=(MacArray){0};a->ports.control=ctrl;a->ports.sram_data=q;a->ports.row_sums=&a->sums_bus;
     return bus_init(&a->sums_bus,sizeof(RowSums)) && bus_register_link(n,&a->sums_bus) && bus_register_module(n,macArrayBusses,a);
 }
