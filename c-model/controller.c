@@ -63,6 +63,7 @@ void controllerBusses(void *context, uint64_t cycle)
         out.address = addresses[c->edge];
         log_flow(cycle, "AGU", "READ_ISSUE", "layer=%u kind=%s byte_addr=0x%04X", c->layer + 1, load_name(out.read_kind), out.address);
     }
+    
     else if (c->edge >= 5 && c->edge <= 11)
     {
         if (!c->config_loaded)
@@ -73,6 +74,7 @@ void controllerBusses(void *context, uint64_t cycle)
         out.kind = EDGE_COMPUTE;
         out.wave = c->edge - 4;
     }
+
     else if (c->edge == 12)
         out.kind = EDGE_POST;
     else if (c->edge == 13)
